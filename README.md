@@ -1,13 +1,4 @@
-<h2 align="center">
-   <a href="https://www.fox-ess.com">FoxESS</a> and<a href="https://www.home-assistant.io"> Home Assistant</a> integration  🏡 ☀
-   </br></br>
-   <img src="https://github.com/home-assistant/brands/raw/master/custom_integrations/foxess/logo.png" >
-   </br>
-   <a href="https://github.com/hacs/default"><img src="https://img.shields.io/badge/HACS-default-sucess"></a>
-   <a href="https://github.com/macxq/foxess-ha/actions/workflows/HACS.yaml/badge.svg?branch=main"><img src="https://github.com/macxq/foxess-ha/actions/workflows/HACS.yaml/badge.svg?branch=main"/></a>
-    <a href="https://github.com/macxq/foxess-ha/actions/workflows/hassfest.yaml/badge.svg"><img src="https://github.com/macxq/foxess-ha/actions/workflows/hassfest.yaml/badge.svg"/></a>
-    </br>
-</h2>
+This is a manual fork from the original.
 
 ## ⚙️ Installation & ♻️ Update
 
