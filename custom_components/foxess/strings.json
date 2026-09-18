@@ -1,0 +1,38 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Connect to FoxESS Cloud",
+        "description": "Enter your inverter's serial number and a FoxESS Cloud OpenAPI key (generate one at foxesscloud.com under User Center > API Management).",
+        "data": {
+          "deviceSN": "Inverter serial number",
+          "apiKey": "API key"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Unable to authenticate with the FoxESS Cloud API. Check the API key and inverter serial number."
+    },
+    "abort": {
+      "already_configured": "This inverter is already configured."
+    }
+  },
+  "options": {
+    "step": {
+      "init": {
+        "title": "FoxESS Cloud options",
+        "data": {
+          "apiKey": "API key",
+          "extendPV": "Extended PV strings (1-18)",
+          "xtZone": "Cross timezone correction",
+          "Restrict": "Restrict to a reduced set of variables",
+          "Use_V1_Api": "Use v1 API calls",
+          "Evo": "Fox EVO system"
+        }
+      }
+    },
+    "error": {
+      "invalid_auth": "Unable to authenticate with the FoxESS Cloud API. Check the API key."
+    }
+  }
+}

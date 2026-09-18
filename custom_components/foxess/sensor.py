@@ -9,23 +9,22 @@ import logging
 import json
 import hashlib
 import asyncio
-import voluptuous as vol
 
 from homeassistant.components.rest.data import RestData
 from homeassistant.components.sensor import (
     SensorDeviceClass,
     SensorStateClass,
-    PLATFORM_SCHEMA,
     SensorEntity,
 )
+from homeassistant.config_entries import ConfigEntry
+from homeassistant.core import HomeAssistant
+from homeassistant.exceptions import ConfigEntryNotReady
+from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 
 from homeassistant.const import (
     ATTR_DATE,
     ATTR_TIME,
-    CONF_PASSWORD,
-    CONF_USERNAME,
-    CONF_NAME,
     UnitOfPower,
     UnitOfTemperature,
     UnitOfEnergy,
@@ -41,7 +40,6 @@ from homeassistant.helpers.update_coordinator import (
 )
 from homeassistant.util.ssl import SSLCipherList
 from homeassistant.helpers.icon import icon_for_battery_level
-import homeassistant.helpers.config_validation as cv
 
 _LOGGER = logging.getLogger(__name__)
 _ENDPOINT_OA_DOMAIN = "https://www.foxesscloud.com"
@@ -73,7 +71,6 @@ BATTERY_LEVELS = {"High": 80, "Medium": 50, "Low": 25, "Empty": 10}
 
 CONF_APIKEY = "apiKey"
 CONF_DEVICESN = "deviceSN"
-CONF_DEVICEID = "deviceID"
 CONF_SYSTEM_ID = "system_id"
 CONF_EXTPV = "extendPV"
 CONF_XTZONE = "xtZone"
@@ -90,38 +87,34 @@ DEFAULT_VERIFY_SSL = False  # True
 SCAN_MINUTES = 1  # number of minutes betwen API requests
 SCAN_INTERVAL = timedelta(minutes=SCAN_MINUTES)
 
-PLATFORM_SCHEMA = PLATFORM_SCHEMA.extend(
-    {
-        vol.Optional(CONF_USERNAME): cv.string,
-        vol.Optional(CONF_PASSWORD): cv.string,
-        vol.Required(CONF_APIKEY): cv.string,
-        vol.Required(CONF_DEVICESN): cv.string,
-        vol.Required(CONF_DEVICEID): cv.string,
-        vol.Optional(CONF_NAME, default=DEFAULT_NAME): cv.string,
-        vol.Optional(CONF_EXTPV): cv.boolean,
-        vol.Optional(CONF_XTZONE): cv.boolean,
-        vol.Optional(CONF_GET_VARIABLES): cv.boolean,
-        vol.Optional(CONF_V1_API): cv.boolean,
-        vol.Optional(CONF_EVO): cv.boolean,
-    }
-)
-
 token = None
+# these are also set as `global` in async_setup_entry, but need a module-level
+# default so the OpenAPI helper functions below can be called (e.g. from the
+# config flow, to validate credentials) before any entry has been set up
+last_api = 0
+LastHour = 0
+timeslice = {}
+RestrictGetVar = False
+xtzone = False
+V1_Api = True
+Evo = False
 
 
-async def async_setup_platform(hass, config, async_add_entities, discovery_info=None):
-    """Set up the FoxESS sensor."""
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up the FoxESS sensor from a config entry."""
     global LastHour, timeslice, last_api, RestrictGetVar, xtzone, V1_Api, Evo
-    Evo = False
-    name = config.get(CONF_NAME)
-    deviceID = config.get(CONF_DEVICEID)
-    devicesn = config.get(CONF_DEVICESN)
-    apiKey = config.get(CONF_APIKEY)
-    ExtPV = config.get(CONF_EXTPV)
-    xtzone = config.get(CONF_XTZONE)
-    RestrictGetVar = config.get(CONF_GET_VARIABLES)
-    V1_Api = config.get(CONF_V1_API)
-    Evo = config.get(CONF_EVO)
+    options = entry.options
+    name = DEFAULT_NAME
+    deviceID = entry.data[CONF_DEVICESN]  # deviceSN and deviceID are the same value
+    devicesn = entry.data[CONF_DEVICESN]
+    apiKey = options.get(CONF_APIKEY, entry.data[CONF_APIKEY])
+    ExtPV = options.get(CONF_EXTPV, False)
+    xtzone = options.get(CONF_XTZONE, False)
+    RestrictGetVar = options.get(CONF_GET_VARIABLES, False)
+    V1_Api = options.get(CONF_V1_API, True)
+    Evo = options.get(CONF_EVO, False)
     _LOGGER.debug("API Key: %s", apiKey)
     _LOGGER.debug("Device SN: %s", devicesn)
     _LOGGER.debug("Device ID: %s", deviceID)
@@ -291,7 +284,9 @@ async def async_setup_platform(hass, config, async_add_entities, discovery_info=
         _LOGGER.error(
             "FoxESS Cloud initialisation failed, Fatal Error - correct error and restart Home Assistant"
         )
-        return False
+        raise ConfigEntryNotReady(
+            "Unable to fetch initial data from the FoxESS Cloud API"
+        )
 
     async_add_entities(
         [
