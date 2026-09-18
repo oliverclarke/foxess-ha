@@ -41,7 +41,7 @@ async def _validate_credentials(
     as an argument, so it has to be set before calling in.
     """
     foxess_sensor.V1_Api = v1_api
-    allData = {"addressbook": {}}
+    allData = {"addressbook": {}, "raw": {}}
     error = await getOADeviceDetail(hass, allData, devicesn, apikey)
     if error:
         raise InvalidAuth
