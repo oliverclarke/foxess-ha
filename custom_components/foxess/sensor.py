@@ -55,12 +55,14 @@ _ENDPOINT_OA_DAILY_GENERATION = "/op/v0/device/generation?sn="
 _ENDPOINT_OA_SETTING_GET = "/op/v0/device/setting/get"
 _ENDPOINT_OA_SETTING_SET = "/op/v0/device/setting/set"
 _ENDPOINT_OA_SCHEDULE_FLAG = "/op/v1/device/scheduler/get/flag"
+_ENDPOINT_OA_PEAKSHAVING_GET = "/op/v0/device/peakShaving/get"
+_ENDPOINT_OA_PEAKSHAVING_SET = "/op/v0/device/peakShaving/set"
 
 WORK_MODE_KEY = "WorkMode"
 # FoxESS also has ForceCharge/ForceDischarge work modes, but those take extra
 # parameters (fdsoc/fdpwr) and are normally driven through the scheduler rather
 # than set directly, so they're deliberately left out of this list.
-WORK_MODES = ["SelfUse", "Feedin", "Backup"]
+WORK_MODES = ["SelfUse", "Feedin", "Backup", "PeakShaving"]
 
 METHOD_POST = "POST"
 METHOD_GET = "GET"
@@ -195,6 +197,9 @@ async def async_get_coordinator(
                         await asyncio.sleep(1)  # OpenAPI demand
                         # read in work mode at startup, then every 60 mins
                         await getWorkMode(hass, allData, devicesn, apiKey)
+                        await asyncio.sleep(1)  # OpenAPI demand
+                        # read in peak shaving settings at startup, then every 60 mins
+                        await getPeakShaving(hass, allData, devicesn, apiKey)
                         await asyncio.sleep(1)  # OpenAPI demand
                     # main real time data fetch, followed by reports
                     geterror = await getRaw(hass, allData, apiKey, devicesn)
@@ -1076,6 +1081,119 @@ async def getScheduleEnabled(hass, devicesn, apiKey):
         else:
             _LOGGER.warning("Schedule Flag Bad Response: %s", response)
             return None
+
+
+async def getPeakShaving(hass, allData, devicesn, apiKey):
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_PEAKSHAVING_GET
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_PEAKSHAVING_GET
+    bodyData = '{"sn":"' + devicesn + '"}'
+
+    _LOGGER.debug("getPeakShaving OA request: %s", bodyData)
+
+    restPeakShaving = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restPeakShaving.async_update()
+
+    if restPeakShaving.data is None or restPeakShaving.data == "":
+        _LOGGER.debug("Unable to get Peak Shaving settings from FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restPeakShaving.data)
+        if response.get("errno") == 0:
+            result = response.get("result") or {}
+            importLimit = result.get("importLimit") or {}
+            soc = result.get("soc") or {}
+            try:
+                allData["settings"]["peakShavingImportLimit"] = float(
+                    importLimit.get("value")
+                )
+            except (TypeError, ValueError):
+                allData["settings"]["peakShavingImportLimit"] = None
+            allData["settings"]["peakShavingImportLimitRange"] = importLimit.get("range")
+            allData["settings"]["peakShavingImportLimitPrecision"] = importLimit.get(
+                "precision"
+            )
+            try:
+                allData["settings"]["peakShavingSoc"] = int(float(soc.get("value")))
+            except (TypeError, ValueError):
+                allData["settings"]["peakShavingSoc"] = None
+            allData["settings"]["peakShavingSocRange"] = soc.get("range")
+            allData["settings"]["peakShavingSocPrecision"] = soc.get("precision")
+            _LOGGER.debug("Peak Shaving Good Response: %s", result)
+            return False
+        else:
+            _LOGGER.error("Peak Shaving Bad Response: %s", response)
+            return True
+
+
+async def setPeakShaving(hass, devicesn, apiKey, importLimit, soc):
+    """Set the peak shaving import limit (W) and SOC threshold (%).
+
+    FoxESS's peakShaving/set endpoint requires both fields on every call, so
+    callers changing only one value must pass through the other's last known
+    (polled) value.
+    """
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_PEAKSHAVING_SET
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_PEAKSHAVING_SET
+    bodyData = (
+        '{"sn":"'
+        + devicesn
+        + '","importLimit":'
+        + str(importLimit)
+        + ',"soc":'
+        + str(int(soc))
+        + "}"
+    )
+
+    _LOGGER.debug("setPeakShaving OA request: %s", bodyData)
+
+    restSetPeakShaving = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restSetPeakShaving.async_update()
+
+    if restSetPeakShaving.data is None or restSetPeakShaving.data == "":
+        _LOGGER.error("Unable to set Peak Shaving settings on FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restSetPeakShaving.data)
+        if response.get("errno") == 0:
+            _LOGGER.debug(
+                "Peak Shaving set to importLimit=%s, soc=%s", importLimit, soc
+            )
+            return False
+        else:
+            _LOGGER.error("Set Peak Shaving Bad Response: %s", response)
+            return True
 
 
 async def getReport(hass, allData, apiKey, devicesn):
