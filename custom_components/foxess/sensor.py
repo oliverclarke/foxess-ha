@@ -41,6 +41,8 @@ from homeassistant.helpers.update_coordinator import (
 from homeassistant.util.ssl import SSLCipherList
 from homeassistant.helpers.icon import icon_for_battery_level
 
+from .const import DOMAIN
+
 _LOGGER = logging.getLogger(__name__)
 _ENDPOINT_OA_DOMAIN = "https://www.foxesscloud.com"
 _ENDPOINT_OA_BATTERY_SETTINGS = "/op/v0/device/battery/soc/get?sn="
@@ -50,6 +52,15 @@ _ENDPOINT_OA_DEVICE_DETAIL_V1 = "/op/v1/device/detail"
 _ENDPOINT_OA_DEVICE_VARIABLES = "/op/v0/device/real/query"
 _ENDPOINT_OA_DEVICE_VARIABLES_V1 = "/op/v1/device/real/query"
 _ENDPOINT_OA_DAILY_GENERATION = "/op/v0/device/generation?sn="
+_ENDPOINT_OA_SETTING_GET = "/op/v0/device/setting/get"
+_ENDPOINT_OA_SETTING_SET = "/op/v0/device/setting/set"
+_ENDPOINT_OA_SCHEDULE_FLAG = "/op/v1/device/scheduler/get/flag"
+
+WORK_MODE_KEY = "WorkMode"
+# FoxESS also has ForceCharge/ForceDischarge work modes, but those take extra
+# parameters (fdsoc/fdpwr) and are normally driven through the scheduler rather
+# than set directly, so they're deliberately left out of this list.
+WORK_MODES = ["SelfUse", "Feedin", "Backup"]
 
 METHOD_POST = "POST"
 METHOD_GET = "GET"
@@ -100,28 +111,27 @@ V1_Api = True
 Evo = False
 
 
-async def async_setup_entry(
-    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
-) -> None:
-    """Set up the FoxESS sensor from a config entry."""
+async def async_get_coordinator(
+    hass: HomeAssistant, entry: ConfigEntry
+) -> DataUpdateCoordinator:
+    """Create, refresh and return the FoxESS Cloud data coordinator for a config entry.
+
+    Shared by every platform (sensor, select, ...) forwarded from this entry, so the
+    OpenAPI polling loop only runs once per inverter.
+    """
     global LastHour, timeslice, last_api, RestrictGetVar, xtzone, V1_Api, Evo
     options = entry.options
-    name = DEFAULT_NAME
-    deviceID = entry.data[CONF_DEVICESN]  # deviceSN and deviceID are the same value
     devicesn = entry.data[CONF_DEVICESN]
     apiKey = options.get(CONF_APIKEY, entry.data[CONF_APIKEY])
-    ExtPV = options.get(CONF_EXTPV, False)
     xtzone = options.get(CONF_XTZONE, False)
     RestrictGetVar = options.get(CONF_GET_VARIABLES, False)
     V1_Api = options.get(CONF_V1_API, True)
     Evo = options.get(CONF_EVO, False)
     _LOGGER.debug("API Key: %s", apiKey)
     _LOGGER.debug("Device SN: %s", devicesn)
-    _LOGGER.debug("Device ID: %s", deviceID)
     _LOGGER.debug("FoxESS Scan Interval: %s minutes", SCAN_MINUTES)
     _LOGGER.debug("Cross Time Zone: %s", xtzone)
     _LOGGER.debug("Restrict Variables: %s", RestrictGetVar)
-    _LOGGER.debug("Extended PV: %s", ExtPV)
     _LOGGER.debug("v1 Api Calls: %s", V1_Api)
     _LOGGER.debug("EVO: %s", Evo)
     if V1_Api is not False:
@@ -129,11 +139,6 @@ async def async_setup_entry(
         _LOGGER.debug("v1 Api Calls Enabled")
     else:
         _LOGGER.warning("v1 Api Calls Disabled, using v0")
-    if ExtPV is not True:
-        ExtPV = False
-        _LOGGER.debug("Extended PV Disabled")
-    else:
-        _LOGGER.warning("Extended PV 1-18 strings enabled")
     if RestrictGetVar is not True:
         RestrictGetVar = False
         _LOGGER.debug("Get Variables is full variable mode")
@@ -148,6 +153,7 @@ async def async_setup_entry(
         "reportDailyGeneration": {},
         "raw": {},
         "battery": {},
+        "settings": {},
         "addressbook": {},
         "online": False,
     }
@@ -186,6 +192,9 @@ async def async_setup_entry(
                     if tslice == 0:
                         # read in battery settings if fitted at startup, then every 60 mins
                         await getOABatterySettings(hass, allData, devicesn, apiKey)
+                        await asyncio.sleep(1)  # OpenAPI demand
+                        # read in work mode at startup, then every 60 mins
+                        await getWorkMode(hass, allData, devicesn, apiKey)
                         await asyncio.sleep(1)  # OpenAPI demand
                     # main real time data fetch, followed by reports
                     geterror = await getRaw(hass, allData, apiKey, devicesn)
@@ -240,11 +249,11 @@ async def async_setup_entry(
 
                 if not allData["online"]:
                     if not geterror:
-                        _LOGGER.warning("%s Inverter is off-line, waiting to retry", name)
+                        _LOGGER.warning("%s Inverter is off-line, waiting to retry", DEFAULT_NAME)
                     else:
-                        _LOGGER.warning("%s Cloud timeout, retry in 1 minute", name)
+                        _LOGGER.warning("%s Cloud timeout, retry in 1 minute", DEFAULT_NAME)
             else:
-                _LOGGER.warning("%s Cloud timeout on Device Detail, retry in 1 minute.", name)
+                _LOGGER.warning("%s Cloud timeout on Device Detail, retry in 1 minute.", DEFAULT_NAME)
 
             if geterror is not False:
                 allData["online"] = False
@@ -287,6 +296,18 @@ async def async_setup_entry(
         raise ConfigEntryNotReady(
             "Unable to fetch initial data from the FoxESS Cloud API"
         )
+
+    return coordinator
+
+
+async def async_setup_entry(
+    hass: HomeAssistant, entry: ConfigEntry, async_add_entities: AddEntitiesCallback
+) -> None:
+    """Set up the FoxESS sensor entities from a config entry."""
+    coordinator = hass.data[DOMAIN][entry.entry_id]
+    name = DEFAULT_NAME
+    deviceID = entry.data[CONF_DEVICESN]  # deviceSN and deviceID are the same value
+    ExtPV = entry.options.get(CONF_EXTPV, False)
 
     async_add_entities(
         [
@@ -923,6 +944,138 @@ async def getOABatterySettings(hass, allData, devicesn, apiKey):
         allData["battery"]["minSoc"] = None
         allData["battery"]["minSocOnGrid"] = None
         return False
+
+
+async def getWorkMode(hass, allData, devicesn, apiKey):
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_SETTING_GET
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_SETTING_GET
+    bodyData = '{"sn":"' + devicesn + '","key":"' + WORK_MODE_KEY + '"}'
+
+    _LOGGER.debug("getWorkMode OA request: %s", bodyData)
+
+    restWorkMode = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restWorkMode.async_update()
+
+    if restWorkMode.data is None or restWorkMode.data == "":
+        _LOGGER.debug("Unable to get Work Mode from FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restWorkMode.data)
+        # the settings endpoints haven't been observed returning a non-empty "msg"
+        # on success, so only errno is checked here (unlike the other get* calls)
+        if response.get("errno") == 0:
+            result = response.get("result") or {}
+            allData["settings"]["workMode"] = result.get("value")
+            _LOGGER.debug("Work Mode Good Response: %s", result)
+            return False
+        else:
+            _LOGGER.error("Work Mode Bad Response: %s", response)
+            return True
+
+
+async def setWorkMode(hass, devicesn, apiKey, mode):
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_SETTING_SET
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_SETTING_SET
+    bodyData = (
+        '{"sn":"' + devicesn + '","key":"' + WORK_MODE_KEY + '","value":"' + mode + '"}'
+    )
+
+    _LOGGER.debug("setWorkMode OA request: %s", bodyData)
+
+    restSetWorkMode = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restSetWorkMode.async_update()
+
+    if restSetWorkMode.data is None or restSetWorkMode.data == "":
+        _LOGGER.error("Unable to set Work Mode on FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restSetWorkMode.data)
+        if response.get("errno") == 0:
+            _LOGGER.debug("Work Mode set to %s", mode)
+            return False
+        else:
+            _LOGGER.error("Set Work Mode Bad Response: %s", response)
+            return True
+
+
+async def getScheduleEnabled(hass, devicesn, apiKey):
+    """Return whether a scheduler is currently active on the inverter.
+
+    FoxESS conflicts with direct work mode changes while a schedule is running,
+    so callers should check this before calling setWorkMode(). Returns
+    None (rather than raising) if the flag itself couldn't be read, so a caller
+    can decide whether to proceed cautiously or not.
+    """
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_SCHEDULE_FLAG
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_SCHEDULE_FLAG
+    bodyData = '{"deviceSN":"' + devicesn + '"}'
+
+    _LOGGER.debug("getScheduleEnabled OA request: %s", bodyData)
+
+    restScheduleFlag = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restScheduleFlag.async_update()
+
+    if restScheduleFlag.data is None or restScheduleFlag.data == "":
+        _LOGGER.warning("Unable to get Schedule Flag from FoxESS Cloud")
+        return None
+    else:
+        response = json.loads(restScheduleFlag.data)
+        if response.get("errno") == 0:
+            result = response.get("result") or {}
+            enable = bool(result.get("enable"))
+            _LOGGER.debug("Schedule Flag Good Response: %s", result)
+            return enable
+        else:
+            _LOGGER.warning("Schedule Flag Bad Response: %s", response)
+            return None
 
 
 async def getReport(hass, allData, apiKey, devicesn):

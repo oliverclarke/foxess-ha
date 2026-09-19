@@ -1,3 +1,7 @@
+<h2 align="center">
+   <a href="https://www.fox-ess.com">FoxESS</a> and<a href="https://www.home-assistant.io"> Home Assistant</a> integration  🏡 ☀
+</h2>
+
 This is a manual fork from the original.
 
 ## ⚙️ Installation & ♻️ Update
