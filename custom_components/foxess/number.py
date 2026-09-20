@@ -12,7 +12,13 @@ from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .sensor import CONF_APIKEY, CONF_DEVICESN, DEFAULT_NAME, setPeakShaving
+from .sensor import (
+    CONF_APIKEY,
+    CONF_DEVICESN,
+    DEFAULT_NAME,
+    firstScheduleGroup,
+    setPeakShaving,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -37,6 +43,11 @@ async def async_setup_entry(
                 coordinator, name, deviceID, devicesn, apiKey
             ),
             FoxESSPeakShavingSoc(coordinator, name, deviceID, devicesn, apiKey),
+            FoxESSScheduleFdSoc(coordinator, name, deviceID),
+            FoxESSScheduleFdPwr(coordinator, name, deviceID),
+            FoxESSScheduleImportLimit(coordinator, name, deviceID),
+            FoxESSScheduleExportLimit(coordinator, name, deviceID),
+            FoxESSSchedulePvLimit(coordinator, name, deviceID),
         ]
     )
 
@@ -168,3 +179,113 @@ class FoxESSPeakShavingSoc(FoxESSPeakShavingBase):
                 "- wait for the next update and try again."
             )
         await self._async_set_pair(importLimit, int(value))
+
+
+class FoxESSScheduleNumberBase(CoordinatorEntity, NumberEntity):
+    """Common handling for a locally-staged scheduler group's extraParam field.
+
+    Values are only edited locally (coordinator.schedule_staging) - nothing is
+    sent to FoxESS Cloud until the "Push Staged Schedule Group" button
+    (button.py) is pressed. See sensor.py's FoxESSScheduleStaging.
+    """
+
+    _attr_mode = NumberMode.BOX
+
+    def __init__(self, coordinator, name, deviceID):
+        super().__init__(coordinator=coordinator)
+        self._staging = coordinator.schedule_staging
+        _LOGGER.debug("Initiating Entity - %s", self._nameValue)
+        self._attr_name = f"{name} - {self._nameValue}"
+        self._attr_unique_id = f"{deviceID}{self._uniqueValue}"
+
+    def _propertyRange(self):
+        properties = self.coordinator.data.get("settings", {}).get(
+            "schedule", {}
+        ).get("properties", {})
+        return properties.get(self._paramKey) or {}
+
+    @property
+    def native_min_value(self) -> float:
+        rangeData = self._propertyRange().get("range")
+        if rangeData and rangeData.get("min") is not None:
+            return float(rangeData["min"])
+        return self._defaultMin
+
+    @property
+    def native_max_value(self) -> float:
+        rangeData = self._propertyRange().get("range")
+        if rangeData and rangeData.get("max") is not None:
+            return float(rangeData["max"])
+        return self._defaultMax
+
+    @property
+    def native_step(self) -> float:
+        precision = self._propertyRange().get("precision")
+        if precision:
+            return float(precision)
+        return 1
+
+    @property
+    def native_value(self) -> float | None:
+        value = self._staging.group.get("extraParam", {}).get(self._paramKey)
+        return float(value) if value is not None else None
+
+    async def async_set_native_value(self, value: float) -> None:
+        self._staging.group.setdefault("extraParam", {})[self._paramKey] = value
+        self._staging.dirty = True
+        self.async_write_ha_state()
+
+    def _handle_coordinator_update(self) -> None:
+        self._staging.sync_if_clean(firstScheduleGroup(self.coordinator.data))
+        super()._handle_coordinator_update()
+
+
+class FoxESSScheduleFdSoc(FoxESSScheduleNumberBase):
+    _attr_native_unit_of_measurement = PERCENTAGE
+    _paramKey = "fdSoc"
+    _nameValue = "Schedule Charging Cut-off SOC"
+    _uniqueValue = "schedule-fd-soc"
+    _defaultMin = 0
+    _defaultMax = 100
+
+
+class FoxESSScheduleFdPwr(FoxESSScheduleNumberBase):
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _paramKey = "fdPwr"
+    _nameValue = "Schedule Charge Power from Grid"
+    _uniqueValue = "schedule-fd-pwr"
+    _defaultMin = DEFAULT_IMPORT_LIMIT_MIN
+    _defaultMax = DEFAULT_IMPORT_LIMIT_MAX
+
+
+class FoxESSScheduleImportLimit(FoxESSScheduleNumberBase):
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _paramKey = "importLimit"
+    _nameValue = "Schedule Import Limit"
+    _uniqueValue = "schedule-import-limit"
+    _defaultMin = DEFAULT_IMPORT_LIMIT_MIN
+    _defaultMax = DEFAULT_IMPORT_LIMIT_MAX
+
+
+class FoxESSScheduleExportLimit(FoxESSScheduleNumberBase):
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _paramKey = "exportLimit"
+    _nameValue = "Schedule Export Limit"
+    _uniqueValue = "schedule-export-limit"
+    _defaultMin = DEFAULT_IMPORT_LIMIT_MIN
+    _defaultMax = DEFAULT_IMPORT_LIMIT_MAX
+
+
+class FoxESSSchedulePvLimit(FoxESSScheduleNumberBase):
+    """Best-effort stand-in for the FoxESS app's "Charge from PV" toggle.
+
+    FoxESS's OpenAPI doesn't document a distinct boolean for this - pvLimit
+    is the closest documented field. Unconfirmed against real hardware.
+    """
+
+    _attr_native_unit_of_measurement = UnitOfPower.WATT
+    _paramKey = "pvLimit"
+    _nameValue = "Schedule Charge from PV Limit"
+    _uniqueValue = "schedule-pv-limit"
+    _defaultMin = DEFAULT_IMPORT_LIMIT_MIN
+    _defaultMax = DEFAULT_IMPORT_LIMIT_MAX

@@ -1,0 +1,38 @@
+set_schedule:
+  name: Set schedule
+  description: >-
+    Replace the inverter's entire scheduler table (every time segment) in one
+    call. This overwrites all existing segments - it does not merge with what
+    is currently on the inverter, and it is independent of (bypasses) the
+    single staged-group entities used by the Push Staged Schedule Group
+    button.
+  fields:
+    device_sn:
+      name: Inverter serial number
+      description: The FoxESS deviceSN to apply the schedule to.
+      required: true
+      example: "60BXXXXXXXXXXXX"
+      selector:
+        text:
+    groups:
+      name: Schedule groups
+      description: >-
+        Ordered list of time segments. Each item needs startHour,
+        startMinute, endHour, endMinute (integers) and workMode
+        (SelfUse/Feedin/Backup/PeakShaving/ForceCharge/ForceDischarge), plus
+        an optional extraParam object (fdSoc, fdPwr, importLimit,
+        exportLimit, pvLimit).
+      required: true
+      example: >-
+        [{"startHour":0,"startMinute":0,"endHour":6,"endMinute":0,"workMode":"ForceCharge","extraParam":{"fdSoc":100,"fdPwr":3000}}]
+      selector:
+        object:
+    is_default:
+      name: Set as default
+      description: >-
+        Passed through as FoxESS's "isDefault" flag (exact effect unconfirmed
+        - defaults to false).
+      required: false
+      default: false
+      selector:
+        boolean:

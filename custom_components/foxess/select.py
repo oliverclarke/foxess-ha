@@ -15,7 +15,9 @@ from .sensor import (
     CONF_APIKEY,
     CONF_DEVICESN,
     DEFAULT_NAME,
+    SCHEDULE_WORK_MODES,
     WORK_MODES,
+    firstScheduleGroup,
     getScheduleEnabled,
     setWorkMode,
 )
@@ -34,7 +36,10 @@ async def async_setup_entry(
     apiKey = entry.options.get(CONF_APIKEY, entry.data[CONF_APIKEY])
 
     async_add_entities(
-        [FoxESSWorkMode(coordinator, name, deviceID, devicesn, apiKey)]
+        [
+            FoxESSWorkMode(coordinator, name, deviceID, devicesn, apiKey),
+            FoxESSScheduleWorkMode(coordinator, name, deviceID),
+        ]
     )
 
 
@@ -65,8 +70,8 @@ class FoxESSWorkMode(CoordinatorEntity, SelectEntity):
         if scheduleEnabled:
             raise HomeAssistantError(
                 "Cannot change work mode: a schedule is currently active on the "
-                "inverter. Disable the schedule in the FoxESS app first, then try "
-                "again."
+                "inverter. Turn off the Schedule Enabled switch (or disable it "
+                "in the FoxESS app) first, then try again."
             )
 
         error = await setWorkMode(self.hass, self._devicesn, self._apiKey, option)
@@ -79,3 +84,32 @@ class FoxESSWorkMode(CoordinatorEntity, SelectEntity):
         self.coordinator.data.setdefault("settings", {})["workMode"] = option
         self.async_write_ha_state()
         await self.coordinator.async_request_refresh()
+
+
+class FoxESSScheduleWorkMode(CoordinatorEntity, SelectEntity):
+    """Work mode for the locally-staged scheduler group (not applied until
+    pushed via the "Push Staged Schedule Group" button in button.py).
+    """
+
+    _attr_options = SCHEDULE_WORK_MODES
+    _attr_icon = "mdi:calendar-sync"
+
+    def __init__(self, coordinator, name, deviceID):
+        super().__init__(coordinator=coordinator)
+        self._staging = coordinator.schedule_staging
+        _LOGGER.debug("Initiating Entity - Schedule Work Mode")
+        self._attr_name = f"{name} - Schedule Work Mode"
+        self._attr_unique_id = f"{deviceID}schedule-work-mode"
+
+    @property
+    def current_option(self) -> str | None:
+        return self._staging.group.get("workMode")
+
+    async def async_select_option(self, option: str) -> None:
+        self._staging.group["workMode"] = option
+        self._staging.dirty = True
+        self.async_write_ha_state()
+
+    def _handle_coordinator_update(self) -> None:
+        self._staging.sync_if_clean(firstScheduleGroup(self.coordinator.data))
+        super()._handle_coordinator_update()

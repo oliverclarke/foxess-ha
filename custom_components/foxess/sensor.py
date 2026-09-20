@@ -4,6 +4,7 @@ from collections import namedtuple
 from datetime import timedelta
 from datetime import datetime
 from dateutil import parser
+import copy
 import time
 import logging
 import json
@@ -55,6 +56,9 @@ _ENDPOINT_OA_DAILY_GENERATION = "/op/v0/device/generation?sn="
 _ENDPOINT_OA_SETTING_GET = "/op/v0/device/setting/get"
 _ENDPOINT_OA_SETTING_SET = "/op/v0/device/setting/set"
 _ENDPOINT_OA_SCHEDULE_FLAG = "/op/v1/device/scheduler/get/flag"
+_ENDPOINT_OA_SCHEDULE_SET_FLAG = "/op/v1/device/scheduler/set/flag"
+_ENDPOINT_OA_SCHEDULE_GET = "/op/v3/device/scheduler/get"
+_ENDPOINT_OA_SCHEDULE_ENABLE = "/op/v3/device/scheduler/enable"
 _ENDPOINT_OA_PEAKSHAVING_GET = "/op/v0/device/peakShaving/get"
 _ENDPOINT_OA_PEAKSHAVING_SET = "/op/v0/device/peakShaving/set"
 
@@ -63,6 +67,10 @@ WORK_MODE_KEY = "WorkMode"
 # parameters (fdsoc/fdpwr) and are normally driven through the scheduler rather
 # than set directly, so they're deliberately left out of this list.
 WORK_MODES = ["SelfUse", "Feedin", "Backup", "PeakShaving"]
+# ForceCharge/ForceDischarge are only ever set through the scheduler (see
+# getSchedule/setSchedule below and the schedule work mode select), never via
+# setWorkMode() directly - FoxESS's own tooling does the same.
+SCHEDULE_WORK_MODES = WORK_MODES + ["ForceCharge", "ForceDischarge"]
 
 METHOD_POST = "POST"
 METHOD_GET = "GET"
@@ -155,7 +163,14 @@ async def async_get_coordinator(
         "reportDailyGeneration": {},
         "raw": {},
         "battery": {},
-        "settings": {},
+        "settings": {
+            "schedule": {
+                "enable": False,
+                "groups": [],
+                "maxGroupCount": None,
+                "properties": {},
+            }
+        },
         "addressbook": {},
         "online": False,
     }
@@ -200,6 +215,9 @@ async def async_get_coordinator(
                         await asyncio.sleep(1)  # OpenAPI demand
                         # read in peak shaving settings at startup, then every 60 mins
                         await getPeakShaving(hass, allData, devicesn, apiKey)
+                        await asyncio.sleep(1)  # OpenAPI demand
+                        # read in the scheduler table at startup, then every 60 mins
+                        await getSchedule(hass, allData, devicesn, apiKey)
                         await asyncio.sleep(1)  # OpenAPI demand
                     # main real time data fetch, followed by reports
                     geterror = await getRaw(hass, allData, apiKey, devicesn)
@@ -291,6 +309,10 @@ async def async_get_coordinator(
         # Polling interval. Will only be polled if there are subscribers.
         update_interval=SCAN_INTERVAL,
     )
+    # holds the locally-edited scheduler group shared by the schedule
+    # select/number/time entities and the push/restore buttons (select.py,
+    # number.py, time.py, button.py)
+    coordinator.schedule_staging = FoxESSScheduleStaging()
 
     await coordinator.async_refresh()
 
@@ -1194,6 +1216,194 @@ async def setPeakShaving(hass, devicesn, apiKey, importLimit, soc):
         else:
             _LOGGER.error("Set Peak Shaving Bad Response: %s", response)
             return True
+
+
+async def getSchedule(hass, allData, devicesn, apiKey):
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_SCHEDULE_GET
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_SCHEDULE_GET
+    bodyData = '{"deviceSN":"' + devicesn + '"}'
+
+    _LOGGER.debug("getSchedule OA request: %s", bodyData)
+
+    restSchedule = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restSchedule.async_update()
+
+    if restSchedule.data is None or restSchedule.data == "":
+        _LOGGER.debug("Unable to get Schedule from FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restSchedule.data)
+        if response.get("errno") == 0:
+            result = response.get("result") or {}
+            allData["settings"]["schedule"] = {
+                "enable": str(result.get("enable")) == "1",
+                "groups": result.get("groups") or [],
+                "maxGroupCount": result.get("maxGroupCount"),
+                "properties": result.get("properties") or {},
+            }
+            _LOGGER.debug("Schedule Good Response: %s", result)
+            return False
+        else:
+            _LOGGER.error("Schedule Bad Response: %s", response)
+            return True
+
+
+async def setSchedule(hass, devicesn, apiKey, groups, isDefault=False):
+    """Replace the entire scheduler table (all groups) in one call.
+
+    Unlike the other setters in this file, the body is a nested list of
+    group dicts rather than a few scalar fields, so it's built with
+    json.dumps() instead of the usual string concatenation.
+    """
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_SCHEDULE_ENABLE
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_SCHEDULE_ENABLE
+
+    cleanGroups = []
+    for group in groups:
+        group = dict(group)
+        if group.get("extraParam"):
+            group["extraParam"] = {
+                k: v for k, v in group["extraParam"].items() if v is not None
+            }
+        cleanGroups.append(group)
+
+    bodyData = json.dumps(
+        {"deviceSN": devicesn, "isDefault": isDefault, "groups": cleanGroups}
+    )
+
+    _LOGGER.debug("setSchedule OA request: %s", bodyData)
+
+    restSetSchedule = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restSetSchedule.async_update()
+
+    if restSetSchedule.data is None or restSetSchedule.data == "":
+        _LOGGER.error("Unable to set Schedule on FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restSetSchedule.data)
+        if response.get("errno") == 0:
+            _LOGGER.debug("Schedule set to groups=%s", cleanGroups)
+            return False
+        else:
+            _LOGGER.error("Set Schedule Bad Response: %s", response)
+            return True
+
+
+async def setScheduleFlag(hass, devicesn, apiKey, enable):
+    await waitforAPI()  # check for api delay
+
+    path = _ENDPOINT_OA_SCHEDULE_SET_FLAG
+    headerData = GetAuth().get_signature(token=apiKey, path=path)
+
+    path = _ENDPOINT_OA_DOMAIN + _ENDPOINT_OA_SCHEDULE_SET_FLAG
+    bodyData = '{"deviceSN":"' + devicesn + '","enable":' + str(int(enable)) + "}"
+
+    _LOGGER.debug("setScheduleFlag OA request: %s", bodyData)
+
+    restSetScheduleFlag = RestData(
+        hass,
+        METHOD_POST,
+        path,
+        DEFAULT_ENCODING,
+        None,
+        headerData,
+        None,
+        bodyData,
+        DEFAULT_VERIFY_SSL,
+        SSLCipherList.PYTHON_DEFAULT,
+        DEFAULT_TIMEOUT,
+    )
+    await restSetScheduleFlag.async_update()
+
+    if restSetScheduleFlag.data is None or restSetScheduleFlag.data == "":
+        _LOGGER.error("Unable to set Schedule Flag on FoxESS Cloud")
+        return True
+    else:
+        response = json.loads(restSetScheduleFlag.data)
+        if response.get("errno") == 0:
+            _LOGGER.debug("Schedule Flag set to %s", enable)
+            return False
+        else:
+            _LOGGER.error("Set Schedule Flag Bad Response: %s", response)
+            return True
+
+
+def firstScheduleGroup(coordinatorData):
+    """Return the first scheduler group from coordinator data, or None."""
+    groups = coordinatorData.get("settings", {}).get("schedule", {}).get("groups") or []
+    return groups[0] if groups else None
+
+
+class FoxESSScheduleStaging:
+    """Holds a locally-edited scheduler group (index 0) shared by the schedule
+    select/number/time entities, before it's pushed to the API.
+
+    Mirrors the staging/dirty pattern used by other FoxESS Home Assistant
+    integrations for this same scheduler API, adapted to this codebase's
+    plain-dict style. Lives as an attribute on the shared coordinator
+    (coordinator.schedule_staging) rather than in hass.data.
+    """
+
+    def __init__(self):
+        self.group = self.default_group()
+        self.dirty = False
+
+    @staticmethod
+    def default_group():
+        return {
+            "workMode": "ForceCharge",
+            "startHour": 0,
+            "startMinute": 0,
+            "endHour": 0,
+            "endMinute": 0,
+            "extraParam": {
+                "fdSoc": None,
+                "fdPwr": None,
+                "importLimit": None,
+                "exportLimit": None,
+                "pvLimit": None,
+            },
+        }
+
+    def sync_if_clean(self, polledGroup):
+        if not self.dirty and polledGroup:
+            self.group = copy.deepcopy(polledGroup)
+
+    def restore(self, polledGroup):
+        self.group = copy.deepcopy(polledGroup) if polledGroup else self.default_group()
+        self.dirty = False
 
 
 async def getReport(hass, allData, apiKey, devicesn):
