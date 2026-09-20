@@ -8,10 +8,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .sensor import CONF_APIKEY, CONF_DEVICESN, DEFAULT_NAME, setSchedule
+from .sensor import (
+    CONF_APIKEY,
+    CONF_DEVICESN,
+    DEFAULT_NAME,
+    FoxESSEntity,
+    setSchedule,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -34,7 +39,7 @@ async def async_setup_entry(
     )
 
 
-class FoxESSSchedulePush(CoordinatorEntity, ButtonEntity):
+class FoxESSSchedulePush(FoxESSEntity, ButtonEntity):
     """Push the locally-staged scheduler group (group 0) to FoxESS Cloud.
 
     Any other groups already on the inverter (e.g. set via the
@@ -76,7 +81,7 @@ class FoxESSSchedulePush(CoordinatorEntity, ButtonEntity):
         await self.coordinator.async_request_refresh()
 
 
-class FoxESSScheduleRestore(CoordinatorEntity, ButtonEntity):
+class FoxESSScheduleRestore(FoxESSEntity, ButtonEntity):
     """Discard local edits to the staged scheduler group, re-syncing from the
     last poll (or FoxESS's defaults if nothing has ever been fetched).
     """

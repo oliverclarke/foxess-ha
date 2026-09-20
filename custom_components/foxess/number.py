@@ -9,13 +9,13 @@ from homeassistant.const import PERCENTAGE, UnitOfPower
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .sensor import (
     CONF_APIKEY,
     CONF_DEVICESN,
     DEFAULT_NAME,
+    FoxESSEntity,
     firstScheduleGroup,
     setPeakShaving,
 )
@@ -52,7 +52,7 @@ async def async_setup_entry(
     )
 
 
-class FoxESSPeakShavingBase(CoordinatorEntity, NumberEntity):
+class FoxESSPeakShavingBase(FoxESSEntity, NumberEntity):
     """Common paired-value handling for the peakShaving/set endpoint.
 
     FoxESS requires both importLimit and soc on every write, so setting one
@@ -181,7 +181,7 @@ class FoxESSPeakShavingSoc(FoxESSPeakShavingBase):
         await self._async_set_pair(importLimit, int(value))
 
 
-class FoxESSScheduleNumberBase(CoordinatorEntity, NumberEntity):
+class FoxESSScheduleNumberBase(FoxESSEntity, NumberEntity):
     """Common handling for a locally-staged scheduler group's extraParam field.
 
     Values are only edited locally (coordinator.schedule_staging) - nothing is

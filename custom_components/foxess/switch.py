@@ -8,10 +8,15 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .sensor import CONF_APIKEY, CONF_DEVICESN, DEFAULT_NAME, setScheduleFlag
+from .sensor import (
+    CONF_APIKEY,
+    CONF_DEVICESN,
+    DEFAULT_NAME,
+    FoxESSEntity,
+    setScheduleFlag,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -31,7 +36,7 @@ async def async_setup_entry(
     )
 
 
-class FoxESSScheduleEnable(CoordinatorEntity, SwitchEntity):
+class FoxESSScheduleEnable(FoxESSEntity, SwitchEntity):
     """Master on/off switch for the inverter's scheduler.
 
     Reads the cached value from the ~hourly getSchedule() poll rather than

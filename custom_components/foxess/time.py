@@ -8,10 +8,9 @@ from homeassistant.components.time import TimeEntity
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
-from .sensor import CONF_DEVICESN, DEFAULT_NAME, firstScheduleGroup
+from .sensor import CONF_DEVICESN, DEFAULT_NAME, FoxESSEntity, firstScheduleGroup
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -32,7 +31,7 @@ async def async_setup_entry(
     )
 
 
-class FoxESSScheduleTimeBase(CoordinatorEntity, TimeEntity):
+class FoxESSScheduleTimeBase(FoxESSEntity, TimeEntity):
     """Start/end time for the locally-staged scheduler group.
 
     Values are only edited locally (coordinator.schedule_staging) - nothing is

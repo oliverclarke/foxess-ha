@@ -8,7 +8,6 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import HomeAssistantError
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
-from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
 from .const import DOMAIN
 from .sensor import (
@@ -17,6 +16,7 @@ from .sensor import (
     DEFAULT_NAME,
     SCHEDULE_WORK_MODES,
     WORK_MODES,
+    FoxESSEntity,
     firstScheduleGroup,
     getScheduleEnabled,
     setWorkMode,
@@ -43,7 +43,7 @@ async def async_setup_entry(
     )
 
 
-class FoxESSWorkMode(CoordinatorEntity, SelectEntity):
+class FoxESSWorkMode(FoxESSEntity, SelectEntity):
     _attr_options = WORK_MODES
     _attr_icon = "mdi:home-battery"
 
@@ -86,7 +86,7 @@ class FoxESSWorkMode(CoordinatorEntity, SelectEntity):
         await self.coordinator.async_request_refresh()
 
 
-class FoxESSScheduleWorkMode(CoordinatorEntity, SelectEntity):
+class FoxESSScheduleWorkMode(FoxESSEntity, SelectEntity):
     """Work mode for the locally-staged scheduler group (not applied until
     pushed via the "Push Staged Schedule Group" button in button.py).
     """
